@@ -1,3 +1,6 @@
+"""Start model loading in the lifespan without blocking readiness polling."""
+import asyncio
+from contextlib import asynccontextmanager
 import logging
 
 from fastapi import FastAPI
@@ -6,9 +9,21 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import ROOT
 from app.routes.api import router
+from app.model_loader import service
+
+
+@asynccontextmanager
+async def lifespan(app):
+    loading = asyncio.create_task(asyncio.to_thread(service.initialize))
+    try:
+        yield
+    finally:
+        await loading
+        from app.routes.api import wait_for_jobs
+        await asyncio.to_thread(wait_for_jobs)
 
 logging.basicConfig(level=logging.INFO)
-app = FastAPI(title="Unlimited-OCR Test UI")
+app = FastAPI(title="Unlimited-OCR Test UI", lifespan=lifespan)
 app.include_router(router)
 app.mount("/static", StaticFiles(directory=ROOT / "frontend"), name="static")
 

@@ -1,3 +1,4 @@
+<!-- Updated lifecycle requirements from fixes.md supersede original lazy loading. -->
 # Project instructions
 
 Build the local Unlimited-OCR test application described in `unocrprompt.md`.
@@ -10,7 +11,8 @@ pages sequentially, preserve page order, and default to no upload byte cap.
   Gradio, database, authentication, or hosted service is needed for this scope.
 - Keep hardware detection in `app/device.py`, configuration in `app/config.py`,
   model lifecycle in `app/model_loader.py`, and HTTP handling in `app/routes/`.
-- Load weights lazily, once per process. Serialize inference. Keep the UI and
+- Cache weights during setup; load once at startup in a background thread.
+  Expose loading/ready/error and reject OCR until ready. Serialize inference. Keep the UI and
   system-info route usable before a model is loaded and after a model error.
 - Use AutoModel/AutoTokenizer and the actual upstream infer API. Verify upstream
   interfaces before changing integration. Never invent OCR results or claim CPU
@@ -27,3 +29,7 @@ pages sequentially, preserve page order, and default to no upload byte cap.
 - Run `python -m unittest discover -s tests -v` for backend changes and
   `node --check frontend/app.js` for JavaScript changes. Record unavailable checks.
 - Use one uvicorn worker to avoid multiple model copies. Default to localhost.
+
+- PDFs return job IDs and publish per-page progress/results; preserve partial output
+  on failure. Use one in-process worker, clean temporary files, and document that
+  jobs are not durable across restarts. Follow `fixes.md` for these scope changes.

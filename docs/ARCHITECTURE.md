@@ -1,3 +1,4 @@
+<!-- Updated API contract for startup readiness and asynchronous PDF jobs. -->
 # Architecture and API
 
 `app/main.py` serves `frontend/` and registers `app/routes/api.py`. Routes validate
@@ -10,14 +11,20 @@ Image rasters retain a 25-million-pixel limit. The optional byte limit is checke
 localhost prototype is not a public ingress server with a streaming body limit.
 
 `app/device.py` caches CUDA detection and resolves CUDA/bfloat16 or CPU/float32.
-`app/model_loader.py` owns one lazy model per process. A nonblocking lock covers
-loading and inference; concurrent runs receive 409. The device route stays
-available during model work. Failed loads leave the singleton unset for retry.
+`app/model_loader.py` loads one model per process during FastAPI lifespan, in a
+background thread so readiness polling works while loading. Startup reads only
+from the local cache populated by `app.cache_model` during setup. Failed startup
+sets error status; fix setup/cache and restart to retry. Model inference is locked;
+concurrent runs receive 409. The device route stays available during model work.
 A document-level lock also spans upload processing and all PDF pages. PyMuPDF
 renders one page at a time at `UNO_PDF_DPI` (150 by default), scaling oversized
 pages down to fit the raster budget. The same temporary page image is replaced
 each iteration. Page OCR uses the existing single-image model method; there is
-no cross-page model context. Text results accumulate in memory until response.
+no cross-page model context. A single executor runs PDF jobs after upload returns.
+A lock protects job snapshots. Per-page results are published as pages finish;
+errors preserve earlier pages. The last 20 job records remain in memory, with no
+durability across restarts. Temporary files are cleaned on success/error; graceful
+shutdown waits for the active job. Force-killing a process can leave temp files.
 See [PyMuPDF rendering documentation](https://pymupdf.readthedocs.io/en/latest/recipes-images.html).
 
 Inference uses `eval_mode=True` to obtain text directly, with result-file saving
@@ -30,17 +37,21 @@ layout markers, and displayed with `textContent`; no HTML/Markdown execution.
 | Request | Response |
 | --- | --- |
 | `GET /` | Frontend HTML |
-| `GET /api/system-info` | `{"device":"cpu","device_name":"CPU","vram_gb":0.0}` |
+| `GET /api/system-info` | `{"device":"cpu","device_name":"CPU","vram_gb":0.0,"model_status":"loading","model_error":null}` |
 | `GET /api/upload-config` | `{"max_upload_bytes":0,"pdf_dpi":150}` |
-| `POST /api/ocr` | Multipart field `file`; `{"text":"…","inference_seconds":1.23}` |
+| `POST /api/ocr` | Multipart `file`; images return text/timing; PDFs return `{"job_id":"..."}` after saving |
+| `GET /api/ocr/status/{job_id}` | `status`, `pages_done`, `total_pages`, `results`; success adds text/timing, failure adds `error` |
 
-PDF responses additionally contain `page_count` and `pages` (each with `page`,
-`text`, and `inference_seconds`). Combined `text` has page separators; total timing
-is the sum of page inference times. No partial success is returned for a failed PDF.
-Timing excludes model loading/PDF rendering and includes generation and decoding. HTTP errors
-use `{"detail":"readable message"}`: 400 empty file, 413 oversized bytes/pixels,
-415 unsupported/corrupt document, 422 missing field, 409 busy document/model,
-503 model/storage failure. Password-protected or zero-page PDFs receive 400.
+Job status is `processing`, `done`, or `error`. `results` entries contain `page`,
+`text`, and `inference_seconds`. Completed jobs also have `page_count`, `pages`,
+combined `text` with page separators, and total inference time. Polling every two
+seconds gives incremental output. Unknown/expired jobs return 404. The UI stores
+its active job ID in sessionStorage to resume polling after refreshing the tab.
+Timing excludes model loading/PDF rendering and includes generation and decoding.
+Upload errors use HTTP detail: 400 empty file, 413 configured size/pixel limit,
+415 invalid image, 422 missing file, 409 document busy, 503 model not ready/storage
+failure. PDF validation errors (including encrypted, damaged or empty PDFs) appear
+in job status as `error` after acceptance. Existing `/api` URL prefix is retained.
 FastAPI exposes interactive API documentation at `/docs`.
 
 ## Upstream decisions

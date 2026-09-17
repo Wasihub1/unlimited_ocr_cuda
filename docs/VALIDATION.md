@@ -1,4 +1,30 @@
+<!-- Records execution evidence for the reliability changes in fixes.md. -->
 # Validation record
+
+## Reliability and PDF background jobs — 2026-09-17
+
+- Implemented all four changes from `fixes.md` incrementally, including brief
+  file comments explaining changes. Setup and run.bat now have separate roles.
+- Ran `powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1`: exit 0.
+  CPU dependencies were installed already; the Transformers cache step completed
+  and printed `Model cached successfully.` No server was started by setup.
+- Ran the real FastAPI lifespan with TestClient and the cached model: observed
+  `model_status=loading`, then `ready`, while system-info remained responsive.
+  Logged `Model loaded and ready`; shutdown completed successfully. This machine
+  has torch 2.10.0+cpu and no available CUDA device. This validates CPU model
+  loading, not successful CPU inference or CUDA performance.
+- All 17 Python tests passed. Tests use real PDF rendering and mocked inference
+  to verify immediate job acceptance, progress before completion, partial output
+  after a later-page failure, busy rejection, readiness errors, and cleanup.
+- All eight Node DOM-harness tests passed, including readiness gating and job
+  polling for success/error with partial output. JS syntax and PowerShell parsing
+  passed. Full browser rendering and a 100-page CUDA run remain unverified.
+- Transformers emitted an existing checkpoint warning about vision position IDs
+  and a torch_dtype deprecation. Neither prevented cache or startup verification.
+- PDF jobs are in-process, keep the last 20 records, and do not survive restart.
+  Graceful shutdown waits for active work. Output scrolls above 70vh.
+- Restarted the confirmed local uvicorn server on port 8000. Live HTTP checks
+  returned `model_status=ready`, `device=cpu`, and the updated versioned frontend.
 
 ## Initial implementation — 2026-09-17
 

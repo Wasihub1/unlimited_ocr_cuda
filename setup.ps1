@@ -1,22 +1,23 @@
+# Install dependencies and cache model weights before starting any server.
+# Prefer the project runtime so setup does not replace system Python.
 $ErrorActionPreference = "Stop"
-
-Write-Host "Checking for Python 3.12..."
-$hasPython312 = $false
+Set-Location $PSScriptRoot
 try {
-    py -3.12 --version | Out-Null
-    if ($LASTEXITCODE -eq 0) { $hasPython312 = $true }
-} catch {}
-
-if (-not $hasPython312) {
-    Write-Host "Python 3.12 not found. Downloading installer..."
-    $installerUrl = "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe"
-    $installerPath = "$env:TEMP\python-3.12.7-installer.exe"
-    Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
-    Write-Host "Installing Python 3.12 (silent)..."
-    Start-Process -FilePath $installerPath -Args "/quiet InstallAllUsers=1 PrependPath=1 Include_launcher=1" -Wait
-    Write-Host "Please close and reopen PowerShell, then run this script again."
-    exit
+    $projectPython = Join-Path $PSScriptRoot "env\Scripts\python.exe"
+    if (-not (Test-Path $projectPython)) {
+        $projectPython = Join-Path $PSScriptRoot ".tools\python312\python.exe"
+    }
+    if (Test-Path $projectPython) {
+        & $projectPython run.py --device auto --setup-only
+    } else {
+        py -3.12 run.py --device auto --setup-only
+    }
+    if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
+    Write-Host "Downloading model weights, this may take several minutes..."
+    & "$PSScriptRoot\env\Scripts\python.exe" -m app.cache_model
+    if ($LASTEXITCODE -ne 0) { throw "Model caching failed; setup is incomplete. Check the error above and retry." }
+    Write-Host "Setup complete. Run run.bat to start the server."
+} catch {
+    Write-Error "Setup failed: $_"
+    exit 1
 }
-
-Write-Host "Python 3.12 found. Setting up environment..."
-py -3.12 run.py --device auto

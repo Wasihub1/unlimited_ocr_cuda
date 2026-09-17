@@ -1,11 +1,12 @@
+<!-- Show startup readiness and progressive PDF results without long blocking requests. -->
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Unlimited OCR · Local workspace</title>
-  <link rel="stylesheet" href="/static/styles.css?v=pdf-upload-2">
-  <script src="/static/app.js?v=pdf-upload-2" defer></script>
+  <link rel="stylesheet" href="/static/styles.css?v=background-jobs-1">
+  <script src="/static/app.js?v=background-jobs-1" defer></script>
 </head>
 <body>
   <header><a href="/" class="brand">Unlimited<span>OCR</span></a><span id="device" class="badge" role="status">Checking device…</span></header>
@@ -25,10 +26,11 @@
         </label>
         <p id="filename" class="muted">No file selected</p>
         <button id="run" disabled><span id="spinner" hidden aria-hidden="true"></span><span id="run-label">Run OCR</span><span aria-hidden="true">↗</span></button>
-        <p class="note">The first run downloads model weights and may take several minutes. CPU inference is experimental.</p>
+        <p id="model-status" class="note" role="status">Model is loading, please wait...</p>
       </section>
       <section class="panel" aria-labelledby="output-title">
         <div class="panel-heading"><h2 id="output-title">02 <span>Extracted text</span></h2><span id="timing">Awaiting document</span></div>
+        <progress id="progress" max="1" value="0" aria-label="PDF pages completed" hidden></progress>
         <pre id="result" tabindex="0">Your extracted text will appear here.</pre>
         <p id="status" role="status" aria-live="polite">Ready when you are.</p>
       </section>

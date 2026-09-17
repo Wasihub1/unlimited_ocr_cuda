@@ -1,3 +1,4 @@
+<!-- Updated for setup caching, startup readiness, and background PDF jobs. -->
 # Unlimited-OCR Test UI
 
 A local FastAPI application with a plain HTML/CSS/JavaScript frontend. Upload a
@@ -15,9 +16,12 @@ PDFs have no fixed page-count cap. `UNO_PDF_DPI` controls rendering resolution
 raster within 25 million pixels. Image uploads retain the 25-million-pixel check.
 Password-protected PDFs require an unlocked copy. All pages go through the OCR
 model, including PDFs with embedded text. Results contain page labels and a total
-inference time excluding model loading and PDF rendering. A failed page fails the
-request with its page number; partial results are not returned. Large PDFs can
-take a long time; this version returns results after all pages finish.
+inference time excluding model loading and PDF rendering. PDF uploads return a job ID after saving the file. The UI polls progress and shows
+completed pages immediately. If a page fails, earlier results remain visible.
+Jobs run in this server process: restarting loses jobs, and only the last 20 job
+records are retained. One document runs at a time; another upload receives 409.
+Refreshing the same browser tab resumes polling its job. Output grows up to 70vh
+and then scrolls internally.
 
 ## Quick start
 
@@ -26,19 +30,23 @@ environment in `env`. Use it directly without changing your system Python:
 
 ```powershell
 .\env\Scripts\python.exe --version
-.\env\Scripts\python.exe run.py --device cpu
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+.\run.bat
 ```
 
 Optional PowerShell activation: `.\env\Scripts\Activate.ps1`. In your IDE, select
 `env\Scripts\python.exe` as the Python interpreter. Keep `.tools/python312`:
 the virtual environment depends on that base runtime. The launcher installs
-application dependencies on first use; weights download on the first OCR request.
+application dependencies on first use. Run setup.ps1 before starting the server
+to cache weights; the server loads the cached model at startup.
 
 Install **Python 3.12** (with pip and venv) and **Git**, and add them to PATH.
 From this project directory:
 
 ```sh
-python run.py
+python run.py --setup-only
+env/bin/python -m app.cache_model
+env/bin/python run.py --skip-install
 ```
 
 Open http://127.0.0.1:8000. The launcher checks `nvidia-smi -L`, creates `env`,
@@ -59,6 +67,7 @@ verified memory guarantee. CUDA bfloat16 support and sufficient free VRAM matter
 python -m venv env
 .\env\Scripts\python.exe -m pip install -r requirements-cpu.txt
 .\env\Scripts\python.exe run.py --device cpu --setup-only --skip-install
+.\env\Scripts\python.exe -m app.cache_model
 .\env\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
@@ -71,6 +80,7 @@ Use Python 3.12 and an NVIDIA driver compatible with the PyTorch CUDA 12.9 build
 python3.12 -m venv env
 env/bin/python -m pip install -r requirements-cuda.txt
 env/bin/python run.py --device cuda --setup-only --skip-install
+env/bin/python -m app.cache_model
 env/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
@@ -82,12 +92,17 @@ launcher's dependency choice. Do not use multiple workers: each loads its own mo
 
 ## Model downloads and configuration
 
-Weights are **not stored in this repository**. On the first OCR request,
+Weights are **not stored in this repository**. During setup,
 `AutoTokenizer.from_pretrained()` and `AutoModel.from_pretrained()` download the
 model from Hugging Face, normally cached beneath `~/.cache/huggingface` (the user
 profile on Windows). Set `HF_HOME` before starting to choose another cache disk.
 The UI and `/api/system-info` do not trigger downloads. Internet access and enough
-disk/RAM are required on first use. Load start/finish are logged to the terminal.
+disk/RAM are required during setup. Caching instantiates the model on CPU in
+bfloat16 to populate its Transformers cache without using GPU memory. Setup
+fails with a nonzero exit code if caching fails. At server startup the model loads
+from local cache only. Readiness is `loading`, `ready`, or `error`, exposed by
+`/api/system-info`; OCR is disabled until ready. Run setup and restart if cache
+loading fails. Startup logs `Model loaded and ready` when initialization succeeds.
 
 The model requires `trust_remote_code=True`, executing code from the model repo.
 `UNO_MODEL_REVISION` selects a Hugging Face revision (default `main`); set a reviewed

@@ -1,3 +1,4 @@
+"""Load once during startup; expose readiness and refuse OCR before ready."""
 import logging
 import threading
 import time
@@ -21,6 +22,21 @@ class ModelService:
         self._lock = threading.Lock()
         self._model = None
         self._tokenizer = None
+        self.status = "loading"
+        self.error = None
+
+    def initialize(self):
+        with self._lock:
+            if self.status == "ready":
+                return
+            self.status, self.error = "loading", None
+            try:
+                self._load()
+                self.status = "ready"
+                log.info("Model loaded and ready")
+            except Exception as exc:
+                self.status, self.error = "error", str(exc)
+                log.exception("Startup model loading failed; run setup.ps1 to populate the cache")
 
     def _load(self):
         if self._model is not None:
@@ -28,22 +44,24 @@ class ModelService:
         from transformers import AutoModel, AutoTokenizer
 
         hardware = detect_device()
-        log.info("Loading %s on %s; first use downloads weights from Hugging Face.", MODEL_ID, hardware.device)
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True)
+        log.info("Loading cached %s on %s", MODEL_ID, hardware.device)
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True, local_files_only=True)
         # A future CPU fallback belongs here AND in upstream image/attention code.
         # eager attention alone cannot fix upstream's explicit .cuda() calls.
         model = AutoModel.from_pretrained(
             MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True,
             use_safetensors=True, torch_dtype=hardware.dtype,
+            local_files_only=True,
         ).eval().to(hardware.device)
         self._tokenizer, self._model = tokenizer, model
         log.info("Model loading finished.")
 
     def infer(self, image_path, output_path):
+        if self.status != "ready":
+            raise ModelError(self.error or "Model is loading, please wait...")
         if not self._lock.acquire(blocking=False):
             raise ModelBusy("Another OCR request is running. Try again after it finishes.")
         try:
-            self._load()
             import torch
 
             started = time.perf_counter()

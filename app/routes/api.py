@@ -1,4 +1,9 @@
+"""Keep image OCR synchronous; run long PDFs in one worker with partial results."""
 import math
+import copy
+import uuid
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import threading
 import warnings
@@ -15,12 +20,51 @@ from app.model_loader import ModelBusy, ModelError, service
 
 router = APIRouter(prefix="/api")
 document_lock = threading.Lock()
+jobs_lock = threading.Lock()
+jobs = OrderedDict()
+worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdf-ocr")
+
+
+def wait_for_jobs():
+    worker.shutdown(wait=True)
+
+
+def update_job(job_id, **changes):
+    with jobs_lock:
+        jobs[job_id].update(changes)
+
+
+@router.get("/ocr/status/{job_id}")
+def job_status(job_id: str):
+    with jobs_lock:
+        if job_id not in jobs:
+            raise HTTPException(404, "Job not found or expired. Jobs are lost on server restart.")
+        return copy.deepcopy(jobs[job_id])
+
+
+def run_pdf_job(job_id, source, folder, temporary):
+    final = {}
+    try:
+        def progress(pages, total):
+            update_job(job_id, pages_done=len(pages), total_pages=total, results=list(pages))
+        result = process_pdf(source, folder, progress)
+        final = {"status": "done", **result}
+    except Exception as exc:
+        final = {"status": "error", "error": str(getattr(exc, "detail", exc))}
+    finally:
+        try:
+            temporary.cleanup()
+        except OSError as exc:
+            final = {"status": "error", "error": f"Temporary file cleanup failed: {exc}"}
+        finally:
+            document_lock.release()
+            update_job(job_id, **final)
 
 
 @router.get("/system-info")
 def system_info():
     hardware = detect_device()
-    return {"device": hardware.device, "device_name": hardware.device_name, "vram_gb": hardware.vram_gb}
+    return {"device": hardware.device, "device_name": hardware.device_name, "vram_gb": hardware.vram_gb, "model_status": service.status, "model_error": service.error}
 
 
 @router.get("/upload-config")
@@ -46,7 +90,7 @@ def process_image(source, folder):
     return service.infer(image_path, folder / "result")
 
 
-def process_pdf(source, folder):
+def process_pdf(source, folder, progress=None):
     pdf_path = folder / "input.pdf"
     source.rename(pdf_path)
     try:
@@ -63,6 +107,8 @@ def process_pdf(source, folder):
             raise HTTPException(400, "This PDF is password protected. Upload an unlocked copy.")
         if not document.page_count:
             raise HTTPException(400, "The PDF contains no pages.")
+        if progress:
+            progress([], document.page_count)
         for number in range(document.page_count):
             image_path = folder / "page.png"
             try:
@@ -88,6 +134,8 @@ def process_pdf(source, folder):
             finally:
                 image_path.unlink(missing_ok=True)
             pages.append({"page": number + 1, **result})
+            if progress:
+                progress(pages, document.page_count)
     return {
         "text": "\n\n".join(f"--- Page {p['page']} ---\n{p['text']}" for p in pages),
         "inference_seconds": round(sum(p["inference_seconds"] for p in pages), 3),
@@ -96,26 +144,41 @@ def process_pdf(source, folder):
 
 
 def process_upload(upload):
+    if service.status != "ready":
+        raise HTTPException(503, service.error or "Model is loading, please wait...")
     if not document_lock.acquire(blocking=False):
         raise HTTPException(409, "Another document is being processed. Try again after it finishes.")
+    handed_off = False
+    temporary = None
     try:
-        with tempfile.TemporaryDirectory(prefix="unlimited-ocr-") as temporary:
-            folder = Path(temporary)
-            source = folder / "upload"
-            size = 0
-            signature = b""
-            with source.open("wb") as destination:
-                while chunk := upload.file.read(1024 * 1024):
-                    if not signature:
-                        signature = chunk[:1024]
-                    size += len(chunk)
-                    if MAX_UPLOAD_BYTES and size > MAX_UPLOAD_BYTES:
-                        raise HTTPException(413, f"File exceeds the configured {MAX_UPLOAD_BYTES} byte upload limit.")
-                    destination.write(chunk)
-            if not size:
-                raise HTTPException(400, "Choose a non-empty file.")
-            is_pdf = b"%PDF-" in signature or (upload.filename or "").lower().endswith(".pdf")
-            return process_pdf(source, folder) if is_pdf else process_image(source, folder)
+        temporary = tempfile.TemporaryDirectory(prefix="unlimited-ocr-")
+        folder = Path(temporary.name)
+        source = folder / "upload"
+        size = 0
+        signature = b""
+        with source.open("wb") as destination:
+            while chunk := upload.file.read(1024 * 1024):
+                if not signature:
+                    signature = chunk[:1024]
+                size += len(chunk)
+                if MAX_UPLOAD_BYTES and size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, f"File exceeds the configured {MAX_UPLOAD_BYTES} byte upload limit.")
+                destination.write(chunk)
+        if not size:
+            raise HTTPException(400, "Choose a non-empty file.")
+        is_pdf = b"%PDF-" in signature or (upload.filename or "").lower().endswith(".pdf")
+        if is_pdf:
+            job_id = uuid.uuid4().hex
+            with jobs_lock:
+                # One active document; retain only the last 20 job results.
+                while len(jobs) >= 20:
+                    jobs.popitem(last=False)
+                jobs[job_id] = {"status": "processing", "pages_done": 0, "total_pages": 0, "results": []}
+            worker.submit(run_pdf_job, job_id, source, folder, temporary)
+            handed_off = True
+            return {"job_id": job_id}
+        # A single image is short enough for the existing synchronous path.
+        return process_image(source, folder)
     except ModelBusy as exc:
         raise HTTPException(409, str(exc)) from exc
     except ModelError as exc:
@@ -123,7 +186,12 @@ def process_upload(upload):
     except OSError as exc:
         raise HTTPException(503, "Could not store or process the file. Check available temporary disk space.") from exc
     finally:
-        document_lock.release()
+        if not handed_off:
+            try:
+                if temporary:
+                    temporary.cleanup()
+            finally:
+                document_lock.release()
 
 
 @router.post("/ocr")

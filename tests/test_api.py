@@ -1,3 +1,6 @@
+"""Regression coverage for startup readiness and asynchronous PDF progress."""
+import time
+import threading
 import io
 from pathlib import Path
 import unittest
@@ -14,6 +17,9 @@ from app.model_loader import ModelBusy, ModelError
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        ready = patch("app.routes.api.service.status", "ready")
+        ready.start()
+        self.addCleanup(ready.stop)
         self.client = TestClient(app)
         data = io.BytesIO()
         Image.new("RGB", (8, 8), "white").save(data, format="PNG")
@@ -40,7 +46,7 @@ class ApiTests(unittest.TestCase):
 
     @patch("app.routes.api.detect_device", return_value=Hardware("cpu", "CPU", 0, None))
     def test_device(self, _):
-        self.assertEqual(self.client.get("/api/system-info").json(), {"device": "cpu", "device_name": "CPU", "vram_gb": 0})
+        self.assertEqual(self.client.get("/api/system-info").json(), {"device": "cpu", "device_name": "CPU", "vram_gb": 0, "model_status": "ready", "model_error": None})
 
     def test_invalid_and_empty_images(self):
         self.assertEqual(self.upload(b"not an image").status_code, 415)
@@ -82,7 +88,18 @@ class ApiTests(unittest.TestCase):
             return document.tobytes()
 
     def upload_pdf(self, data):
-        return self.client.post("/api/ocr", files={"file": ("document.pdf", data, "application/pdf")})
+        response = self.client.post("/api/ocr", files={"file": ("document.pdf", data, "application/pdf")})
+        if "job_id" not in response.json():
+            return response
+        return self.wait_job(response.json()["job_id"])
+
+    def wait_job(self, job_id):
+        for _ in range(300):
+            response = self.client.get(f"/api/ocr/status/{job_id}")
+            if response.json()["status"] != "processing":
+                return response
+            time.sleep(0.01)
+        self.fail("Job failed to finish")
 
     def test_pdf_pages_and_cleanup(self):
         paths = []
@@ -102,8 +119,8 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(all(not p.parent.exists() for p in paths))
 
     def test_invalid_and_encrypted_pdf(self):
-        self.assertEqual(self.upload_pdf(b"%PDF-broken").status_code, 415)
-        self.assertEqual(self.upload_pdf(self.pdf_bytes(encrypted=True)).status_code, 400)
+        self.assertEqual(self.upload_pdf(b"%PDF-broken").json()["status"], "error")
+        self.assertIn("password protected", self.upload_pdf(self.pdf_bytes(encrypted=True)).json()["error"])
 
     @patch("app.routes.api.MAX_UPLOAD_BYTES", 0)
     def test_file_larger_than_ten_mib(self):
@@ -118,8 +135,8 @@ class ApiTests(unittest.TestCase):
             raise ModelError("Failure")
         with patch("app.routes.api.service.infer", side_effect=fail):
             response = self.upload_pdf(self.pdf_bytes())
-        self.assertEqual(response.status_code, 503)
-        self.assertIn("PDF page 1", response.json()["detail"])
+        self.assertEqual(response.json()["status"], "error")
+        self.assertIn("PDF page 1", response.json()["error"])
         self.assertFalse(paths[0].parent.exists())
         with patch("app.routes.api.service.infer", return_value={"text": "Recovered", "inference_seconds": 0.1}):
             self.assertEqual(self.upload_pdf(self.pdf_bytes()).status_code, 200)
@@ -132,6 +149,56 @@ class ApiTests(unittest.TestCase):
     @patch("app.routes.api.MAX_UPLOAD_BYTES", 12345)
     def test_upload_configuration(self):
         self.assertEqual(self.client.get("/api/upload-config").json()["max_upload_bytes"], 12345)
+
+
+    def test_readiness_blocks_uploads(self):
+        with patch("app.routes.api.service.status", "loading"):
+            self.assertEqual(self.upload().status_code, 503)
+
+    def test_unknown_job(self):
+        self.assertEqual(self.client.get("/api/ocr/status/missing").status_code, 404)
+
+    def test_partial_progress_before_completion_and_failure(self):
+        entered_second = threading.Event()
+        release = threading.Event()
+        calls = []
+        def infer(image, output):
+            calls.append(1)
+            if len(calls) == 2:
+                entered_second.set()
+                release.wait(3)
+                raise ModelError("Second page failed")
+            return {"text": "First page text", "inference_seconds": 0.2}
+        with patch("app.routes.api.service.infer", side_effect=infer):
+            response = self.client.post("/api/ocr", files={"file": ("test.pdf", self.pdf_bytes(), "application/pdf")})
+            job_id = response.json()["job_id"]
+            try:
+                self.assertTrue(entered_second.wait(2))
+                progress = self.client.get(f"/api/ocr/status/{job_id}").json()
+                self.assertEqual(progress["status"], "processing")
+                self.assertEqual(progress["pages_done"], 1)
+                self.assertEqual(progress["total_pages"], 2)
+                self.assertEqual(progress["results"][0]["text"], "First page text")
+                self.assertEqual(self.upload().status_code, 409)
+            finally:
+                release.set()
+                final = self.wait_job(job_id).json()
+            self.assertEqual(final["status"], "error")
+            self.assertEqual(len(final["results"]), 1)
+
+    def test_model_initialize_once_and_error(self):
+        from app.model_loader import ModelService
+        model = ModelService()
+        with patch.object(model, "_load") as load:
+            model.initialize()
+            model.initialize()
+            self.assertEqual(model.status, "ready")
+            load.assert_called_once()
+        failed = ModelService()
+        with patch.object(failed, "_load", side_effect=RuntimeError("cache missing")):
+            failed.initialize()
+        self.assertEqual(failed.status, "error")
+        self.assertEqual(failed.error, "cache missing")
 
 
 if __name__ == "__main__":
