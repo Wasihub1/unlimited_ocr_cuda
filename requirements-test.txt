@@ -1,0 +1,5 @@
+fastapi>=0.115,<1
+python-multipart>=0.0.20,<1
+Pillow==12.1.1
+httpx>=0.28,<1
+pymupdf==1.27.2.2

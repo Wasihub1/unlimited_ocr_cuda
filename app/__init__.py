@@ -1,0 +1,1 @@
+"""Local Unlimited-OCR application."""
