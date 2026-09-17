@@ -1,7 +1,6 @@
 @echo off
 cd /d "%~dp0"
 
-
 if not exist "env\Scripts\python.exe" (
     echo [INFO] Environment not found. Creating virtual environment...
     python -m venv env
