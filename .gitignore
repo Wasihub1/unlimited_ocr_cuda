@@ -19,3 +19,8 @@ uploads/
 .env
 .tools/
 unocrprompt.md
+codex-prompt-auto-setup-cuda-flag.md
+logs/
+*.log
+tmp/
+env.backup-*/

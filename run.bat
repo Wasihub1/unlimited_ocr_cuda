@@ -1,24 +1,19 @@
 @echo off
+rem Setup validates every step before run.py may start the server.
+setlocal
 cd /d "%~dp0"
-
-if not exist "env\Scripts\python.exe" (
-    echo [INFO] Environment not found. Creating virtual environment...
-    python -m venv env
-    if errorlevel 1 (
-        echo [ERROR] Python is not installed or not added to PATH!
-        pause
-        exit /b 1
-    )
-    
-    echo [INFO] Virtual environment created. Running setup.ps1...
-    powershell -ExecutionPolicy Bypass -File setup.ps1
-    
-    if not exist "env\Scripts\python.exe" (
-        echo [ERROR] Setup failed.
-        pause
-        exit /b 1
-    )
+set HF_HUB_DISABLE_SYMLINKS_WARNING=1
+set HF_HUB_DISABLE_TELEMETRY=1
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1" %*
+if errorlevel 1 (
+    echo [ERROR] Setup failed. See the step and reason above or logs\setup.log.
+    pause
+    exit /b 1
 )
-
-"env\Scripts\python.exe" run.py --skip-install
-pause
+"%~dp0env\Scripts\python.exe" "%~dp0run.py" --skip-install %*
+if errorlevel 1 (
+    echo [ERROR] Server failed. See logs\setup.log.
+    pause
+    exit /b 1
+)
+exit /b 0
