@@ -1,142 +1,136 @@
-<!-- Updated for setup caching, startup readiness, and background PDF jobs. -->
 # Unlimited-OCR Test UI
 
-A local FastAPI application with a plain HTML/CSS/JavaScript frontend. Upload a
-PDF, PNG, JPEG, or WebP file and run Baidu's Unlimited-OCR. Images show a preview;
-PDFs show a selection summary and are processed page by page in order.
+A local FastAPI application with a vanilla HTML/CSS/JavaScript frontend for
+Baidu's Unlimited-OCR. Upload a PDF, PNG, JPEG, or WebP and extract text locally.
+OCR requires a compatible NVIDIA CUDA GPU; a CPU laptop can run the UI but does
+not download or load the model by default.
 
-There is no fixed upload byte limit by default. To set one, define
-`UNO_MAX_UPLOAD_BYTES` before starting (`0` disables it). For example,
-`$env:UNO_MAX_UPLOAD_BYTES = "104857600"` sets 100 MiB in PowerShell. The UI reads
-the configured limit from the server. Available temporary disk space, RAM, and
-processing time still constrain practical file sizes.
+## Windows quick start
 
-PDFs have no fixed page-count cap. `UNO_PDF_DPI` controls rendering resolution
-(default 150; range 36–600); unusually large pages are scaled down to keep each
-raster within 25 million pixels. Image uploads retain the 25-million-pixel check.
-Password-protected PDFs require an unlocked copy. All pages go through the OCR
-model, including PDFs with embedded text. Results contain page labels and a total
-inference time excluding model loading and PDF rendering. PDF uploads return a job ID after saving the file. The UI polls progress and shows
-completed pages immediately. If a page fails, earlier results remain visible.
-Jobs run in this server process: restarting loses jobs, and only the last 20 job
-records are retained. One document runs at a time; another upload receives 409.
-Refreshing the same browser tab resumes polling its job. Output grows up to 70vh
-and then scrolls internally.
+Install Git and put it on PATH, then double-click **run.bat**. Internet is needed
+for first-time setup. The launcher finds Python 3.12 or installs it for the current
+user, creates `env`, selects CPU/CUDA dependencies, and caches the model on NVIDIA
+machines. It starts one server at **http://127.0.0.1:8000** and opens your browser
+once `/api/system-info` responds. Use Ctrl+C in the terminal to stop it.
 
-## Quick start
+Python detection tries `py -3.12`, `python`, the existing environment, the local
+`.tools/python312` runtime, and the default per-user installation directory.
+Automatic installation tries winget, then the signed official Python 3.12.10
+Windows installer. A wrong-version environment is retained as `env.backup-*` and
+replaced with a 3.12 environment. Do not remove `.tools/python312` if your `env`
+depends on it. In your IDE select `env/Scripts/python.exe`.
 
-This Windows workspace has Python 3.12.10 in `.tools/python312` and a virtual
-environment in `env`. Use it directly without changing your system Python:
-
-```powershell
-.\env\Scripts\python.exe --version
-powershell -ExecutionPolicy Bypass -File .\setup.ps1
-.\run.bat
-```
-
-Optional PowerShell activation: `.\env\Scripts\Activate.ps1`. In your IDE, select
-`env\Scripts\python.exe` as the Python interpreter. Keep `.tools/python312`:
-the virtual environment depends on that base runtime. The launcher installs
-application dependencies on first use. Run setup.ps1 before starting the server
-to cache weights; the server loads the cached model at startup.
-
-Install **Python 3.12** (with pip and venv) and **Git**, and add them to PATH.
-From this project directory:
-
-```sh
-python run.py --setup-only
-env/bin/python -m app.cache_model
-env/bin/python run.py --skip-install
-```
-
-Open http://127.0.0.1:8000. The launcher checks `nvidia-smi -L`, creates `env`,
-clones the upstream repository, installs the selected dependencies, and starts
-one uvicorn worker. Override detection with `python run.py --device cpu` or
-`python run.py --device cuda`. Use `--setup-only` to stop before serving;
-`--skip-install` to reuse installed dependencies; `--port 8001` to change ports.
-
-CPU supports testing the application, upload handling, and device display.
-**Successful CPU model loading/inference is not guaranteed**: upstream uses
-explicit CUDA tensor operations. Failures appear in the UI with details and a
-server traceback. A 16 GB NVIDIA GPU is the target for later validation, not a
-verified memory guarantee. CUDA bfloat16 support and sufficient free VRAM matter.
-
-## Manual CPU setup (Windows PowerShell)
+Repeated runs skip pip when the profile and requirements hashes match
+`env/.requirements.stamp`. Delete that stamp to repair an incomplete dependency
+installation. Model downloads are skipped when a manifest confirms the cached
+files still exist with their recorded sizes. Setup failures stop the launcher
+before server startup and report the failing step. Logs are in `logs/setup.log`.
 
 ```powershell
-python -m venv env
-.\env\Scripts\python.exe -m pip install -r requirements-cpu.txt
-.\env\Scripts\python.exe run.py --device cpu --setup-only --skip-install
-.\env\Scripts\python.exe -m app.cache_model
-.\env\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+./run.bat --no-browser
+./run.bat --port 8001
+./run.bat --force-download --setup-only
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
+.\env\Scripts\python.exe run.py --skip-install --no-browser
 ```
 
-## Manual CUDA setup (Linux)
+| Flag | Effect |
+| --- | --- |
+| `--device auto\|cpu\|cuda` | Select dependency profile (default auto via `nvidia-smi -L`); runtime CUDA availability is always checked by PyTorch |
+| `--setup-only` | Complete setup without starting the server |
+| `--skip-install` | Reuse dependencies; in setup-only mode still check/cache CUDA weights; during direct server startup reuse the cache |
+| `--force-download` | Check/cache weights even without CUDA or with `--skip-install` |
+| `--no-browser` | Start without opening a browser |
+| `--port 8001` | Change the localhost port (default 8000) |
 
-Use Python 3.12 and an NVIDIA driver compatible with the PyTorch CUDA 12.9 build.
-`nvidia-smi` must work. Installing a CUDA wheel does not install a system driver.
+## CUDA status
+
+The banner and upload controls follow `/api/system-info`:
+
+- **Amber:** CUDA unavailable. No model is loaded and OCR is disabled. The UI and
+  information endpoints remain usable.
+- **Blue:** CUDA detected; loading the cached model. Uploads wait until ready.
+- **Green:** CUDA available and model ready, with GPU name and total VRAM.
+- **Red:** model loading failed, with the error, or the server cannot be reached.
+
+The UI polls every three seconds to detect startup progress and server restarts.
+OCR requests receive HTTP 503 until ready. An NVIDIA driver compatible with the
+PyTorch CUDA 12.9 wheels, bfloat16 support, and enough free VRAM are required.
+Real GPU inference and 16 GB compatibility are not validated by the mocked tests.
+Python model-loading exceptions become an error state; native driver/library
+faults cannot be recovered by a Python exception handler.
+
+## Linux / manual setup
+
+Use Python 3.12 and Git. `run.py` creates `env` and handles dependency installation,
+model caching, and startup. It does not install Python on Linux.
 
 ```sh
-python3.12 -m venv env
-env/bin/python -m pip install -r requirements-cuda.txt
-env/bin/python run.py --device cuda --setup-only --skip-install
-env/bin/python -m app.cache_model
-env/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+python3.12 run.py --device cuda --setup-only
+env/bin/python run.py --skip-install --no-browser
 ```
 
-For Linux CPU, substitute `requirements-cpu.txt` and `--device cpu`. For Windows
-CUDA, use the Windows commands with `requirements-cuda.txt` and `--device cuda`.
-When changing profiles, reinstall the corresponding requirements and restart.
-Runtime device detection uses `torch.cuda.is_available()`, independently of the
-launcher's dependency choice. Do not use multiple workers: each loads its own model.
+Use `--device cpu` on a non-CUDA machine to run the UI with OCR disabled. Keep one
+uvicorn worker: additional workers would each allocate their own model.
 
-## Model downloads and configuration
+## Model cache and configuration
 
-Weights are **not stored in this repository**. During setup,
-`AutoTokenizer.from_pretrained()` and `AutoModel.from_pretrained()` download the
-model from Hugging Face, normally cached beneath `~/.cache/huggingface` (the user
-profile on Windows). Set `HF_HOME` before starting to choose another cache disk.
-The UI and `/api/system-info` do not trigger downloads. Internet access and enough
-disk/RAM are required during setup. Caching instantiates the model on CPU in
-bfloat16 to populate its Transformers cache without using GPU memory. Setup
-fails with a nonzero exit code if caching fails. At server startup the model loads
-from local cache only. Readiness is `loading`, `ready`, or `error`, exposed by
-`/api/system-info`; OCR is disabled until ready. Run setup and restart if cache
-loading fails. Startup logs `Model loaded and ready` when initialization succeeds.
+Setup downloads the model repository through Hugging Face `snapshot_download`,
+without instantiating a model or allocating CPU/GPU model tensors. This avoids
+the earlier CPU model-loading crash during setup. A first download is roughly
+6-7 GB; setup requires at least 15 GiB free on the cache drive. It makes up to three
+attempts, reuses downloaded files, and reports underlying errors. Set `HF_HOME`
+(or `HF_HUB_CACHE`) before launching to choose the cache drive. Windows symlink
+warnings and Hugging Face telemetry are disabled by the launcher.
 
-The model requires `trust_remote_code=True`, executing code from the model repo.
-`UNO_MODEL_REVISION` selects a Hugging Face revision (default `main`); set a reviewed
-commit for reproducible experiments. `UNO_MAX_LENGTH` sets the total generation
-sequence limit, default 4096, accepted range 1024–32768. Longer documents may be
-truncated at the limit; raising it can increase latency and memory requirements.
+At startup, CUDA is checked before importing the model implementation.
+`AutoModel`/`AutoTokenizer` load local cached files with `trust_remote_code=True`,
+and CUDA uses bfloat16. Upstream custom code executes during model loading;
+`UNO_MODEL_REVISION` can pin a reviewed revision (default `main`). The setup
+manifest retains that revision until changed or `env/.model-cache.json` is removed.
+No weights, environments, vendor downloads, or uploaded documents are committed.
 
-Setup uses an ignored shallow clone at `vendor/unlimited-ocr`, not a submodule:
-this works in a downloaded project without a parent Git repository. Existing
-checkouts are retained without pulling. The clone is an upstream reference;
-Transformers loads executable model code and weights from Hugging Face separately.
+`OCR_MAX_LENGTH` defaults to 16384, range 1024-32768. The legacy `UNO_MAX_LENGTH`
+remains an alias; `OCR_MAX_LENGTH` takes precedence. Higher limits increase memory
+use and generation time. Output can still be truncated at the configured limit.
 
-## Documentation and tests
+## Documents and progress
 
-- [Roadmap and acceptance criteria](docs/ROADMAP.md)
-- [Architecture and API contract](docs/ARCHITECTURE.md)
-- [Validation evidence and remaining checks](docs/VALIDATION.md)
-- [Contributor/agent instructions](AGENTS.md)
-- [Original project brief](unocrprompt.md)
+There is no default byte or PDF page-count cap. `UNO_MAX_UPLOAD_BYTES` optionally
+limits upload bytes (`0` disables it). Images have a 25-million-pixel limit.
+`UNO_PDF_DPI` controls PDF rendering (default 150, range 36-600); oversized PDF
+pages are scaled down to the pixel budget. Disk space, RAM, and runtime still
+limit practical document sizes. Encrypted PDFs must be unlocked first.
 
-Tests do not download a model or require PyTorch:
+PDF uploads return a job ID. One in-process worker processes pages sequentially,
+publishes progress and per-page text, and preserves partial output if a page fails.
+All PDF pages use OCR, including pages containing embedded text. Images use the
+synchronous OCR path. One document runs at a time; concurrent submissions get 409.
+Temporary files are cleaned after completion or failure.
 
-```sh
-python -m pip install -r requirements-test.txt
-python -m unittest discover -s tests -v
+Jobs are not durable across restarts; the server retains the last 20 job records.
+Refreshing the same browser tab resumes polling its job. Output grows to 70vh,
+then scrolls internally, and is rendered as text rather than HTML. Timing excludes
+model loading and PDF rendering. PDFs show a filename/summary rather than an
+embedded PDF viewer.
+
+## Tests and project documentation
+
+```powershell
+.\env\Scripts\python.exe -m pip install -r requirements-test.txt
+.\env\Scripts\python.exe -m unittest discover -s tests -v
+.\env\Scripts\python.exe -m pytest -q
 node --check frontend/app.js
+node --test tests/frontend.test.cjs
 ```
 
-Node is optional and used only for JavaScript syntax checking. See the validation
-record before treating the implementation as hardware verified.
+- [Architecture and API](docs/ARCHITECTURE.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Validation evidence and hardware limitations](docs/VALIDATION.md)
+- [Project instructions](AGENTS.md)
+- [Original source brief](unocrprompt.md)
 
-After updating application code, restart the server (Ctrl+C in its terminal, then
-`env\Scripts\python.exe run.py --skip-install`) and reload the browser. The local
-UI uses versioned asset URLs and no-store headers to keep HTML and JavaScript in
-sync. If an old image-only validation message remains, use Ctrl+Shift+R once.
-PDF selection shows a filename and summary; it does not embed a PDF page viewer.
-Run `node --test tests/frontend.test.cjs` for PDF selection regression tests.
+After code changes, restart the server and reload the page. Versioned frontend
+assets and no-store headers prevent stale UI files. `vendor/unlimited-ocr` is an
+ignored reference checkout, retained without pulling; Hugging Face model revision
+and vendor revision are independent.

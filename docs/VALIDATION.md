@@ -113,3 +113,55 @@ Append observed evidence; keep pending checks explicit until performed.
 - `env\Scripts\python.exe run.py --help` passed.
 - Full CPU/CUDA dependencies, live server boot, and real model inference remain
   pending. The earlier missing-Python blocker is resolved.
+
+## Automatic setup and CUDA-only startup - 2026-09-19
+
+This section supersedes historical CPU model-loading acceptance. Current behavior
+never loads the OCR model on CPU. Host: Windows Server 2022 (build 20348), Python
+3.12.10, PyTorch 2.10.0+cpu, Transformers 4.57.1, huggingface_hub 0.36.2,
+Node 24.11.1. `torch.cuda.is_available()` returned false.
+
+| Check | Actual result |
+| --- | --- |
+| `env/Scripts/python.exe -m unittest discover -s tests -v` | 33 tests passed |
+| `env/Scripts/python.exe -m pytest -q` | 33 tests passed (10.89 seconds; two dependency deprecation warnings) |
+| `node --check frontend/app.js` | Passed |
+| `node --test tests/frontend.test.cjs` | 13 tests passed |
+| PowerShell setup on existing CPU environment | Passed; pip confirmed dependencies, then skipped weight download |
+| Repeat PowerShell setup | Passed; reported requirements unchanged and skipped pip/download |
+| Isolated real environment creation and repeat | Passed using the actual PowerShell functions and Python 3.12 |
+| Simulated cache failure through actual batch/PowerShell chain | Passed; nonzero exit and no server-start marker |
+| Python discovery/version decisions | Passed with mocked interpreter responses |
+| Cache manifest, low disk, download retries and terminal failure | Passed with mocked downloads; no model allocation |
+| CUDA unavailable lifespan | Passed; loader was never called, info remained usable, OCR returned 503 |
+| CUDA ready + PDF job / model load exception | Passed with mocked hardware/model; job completed / server remained usable |
+| Real CPU server smoke | Passed for 30.19 seconds; details below |
+
+Live command: `env/Scripts/python.exe run.py --skip-install --no-browser`.
+`GET /`, `/static/app.js`, `/static/styles.css`, and `/api/upload-config` returned
+200. Repeated `/api/system-info` checks reported device=cpu, cuda_available=false,
+model_status=unavailable_no_cuda, model_error=null, ocr_enabled=false. A multipart
+OCR submission returned 503 with "CUDA is not available on this device - OCR is
+disabled". No model load was attempted. Local evidence: `logs/smoke-test.json`
+and `logs/setup.log` (ignored).
+
+The tool terminal did not deliver Ctrl+C successfully. A Windows Ctrl+Break
+console event then shut down uvicorn: the log records "Shutting down",
+"Application shutdown complete", and "Finished server process [2484]".
+The server is stopped after validation.
+
+The first isolated batch-failure test exposed that discovery ignored a valid
+existing environment when Python was absent from PATH; discovery was corrected
+and the test passed. The initial fallback download attempt in that test hit a TLS
+connection error, and no Python installer ran. Production fallback now selects
+TLS 1.2 explicitly. A real Python installation on a clean Windows machine,
+winget/installer execution, a fresh complete dependency install, real CUDA weight
+download/loading/inference, and 16 GB VRAM acceptance remain unverified.
+Browser opening is tested through readiness/cancellation mocks; interactive browser
+launch and visual rendering were not measured. No CPU inference claim is made.
+
+Existing environment warnings about invalid pip distribution remnants (`~`, `~ip`)
+and TestClient dependency deprecations were observed; they did not fail checks.
+Upstream AutoModel/AutoTokenizer and inference arguments were checked against the
+local vendor README, which uses CUDA/bfloat16 and max_length up to 32768. File-only
+caching follows the official Hugging Face snapshot_download interface.
