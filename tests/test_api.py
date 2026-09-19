@@ -20,6 +20,9 @@ class ApiTests(unittest.TestCase):
         ready = patch("app.routes.api.service.status", "ready")
         ready.start()
         self.addCleanup(ready.stop)
+        hardware = patch("app.routes.api.detect_device", return_value=Hardware("cuda", "Fake GPU", 16, None))
+        hardware.start()
+        self.addCleanup(hardware.stop)
         self.client = TestClient(app)
         data = io.BytesIO()
         Image.new("RGB", (8, 8), "white").save(data, format="PNG")
@@ -46,7 +49,10 @@ class ApiTests(unittest.TestCase):
 
     @patch("app.routes.api.detect_device", return_value=Hardware("cpu", "CPU", 0, None))
     def test_device(self, _):
-        self.assertEqual(self.client.get("/api/system-info").json(), {"device": "cpu", "device_name": "CPU", "vram_gb": 0, "model_status": "ready", "model_error": None})
+        info = self.client.get("/api/system-info").json()
+        self.assertFalse(info["cuda_available"])
+        self.assertFalse(info["ocr_enabled"])
+        self.assertEqual(info["device"], "cpu")
 
     def test_invalid_and_empty_images(self):
         self.assertEqual(self.upload(b"not an image").status_code, 415)
@@ -186,7 +192,8 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(final["status"], "error")
             self.assertEqual(len(final["results"]), 1)
 
-    def test_model_initialize_once_and_error(self):
+    @patch("app.model_loader.detect_device", return_value=Hardware("cuda", "Fake GPU", 16, None))
+    def test_model_initialize_once_and_error(self, _):
         from app.model_loader import ModelService
         model = ModelService()
         with patch.object(model, "_load") as load:

@@ -11,8 +11,9 @@ pages sequentially, preserve page order, and default to no upload byte cap.
   Gradio, database, authentication, or hosted service is needed for this scope.
 - Keep hardware detection in `app/device.py`, configuration in `app/config.py`,
   model lifecycle in `app/model_loader.py`, and HTTP handling in `app/routes/`.
-- Cache weights during setup; load once at startup in a background thread.
-  Expose loading/ready/error and reject OCR until ready. Serialize inference. Keep the UI and
+- Cache weights during setup on CUDA hosts (or explicit force-download); load once
+  at startup in a background thread only when CUDA is available. Never construct
+  the model on CPU. Expose loading/ready/error/unavailable_no_cuda and reject OCR until ready. Serialize inference. Keep the UI and
   system-info route usable before a model is loaded and after a model error.
 - Use AutoModel/AutoTokenizer and the actual upstream infer API. Verify upstream
   interfaces before changing integration. Never invent OCR results or claim CPU

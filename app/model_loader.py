@@ -31,6 +31,10 @@ class ModelService:
                 return
             self.status, self.error = "loading", None
             try:
+                if detect_device().device != "cuda":
+                    self.status = "unavailable_no_cuda"
+                    log.warning("CUDA not available - model not loaded. OCR is disabled on this device.")
+                    return
                 self._load()
                 self.status = "ready"
                 log.info("Model loaded and ready")
@@ -41,13 +45,14 @@ class ModelService:
     def _load(self):
         if self._model is not None:
             return
+        hardware = detect_device()
+        if hardware.device != "cuda":
+            raise ModelError("CUDA is not available on this device - OCR is disabled")
         from transformers import AutoModel, AutoTokenizer
 
-        hardware = detect_device()
         log.info("Loading cached %s on %s", MODEL_ID, hardware.device)
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True, local_files_only=True)
-        # A future CPU fallback belongs here AND in upstream image/attention code.
-        # eager attention alone cannot fix upstream's explicit .cuda() calls.
+        # Never instantiate upstream CUDA-only code on a CPU host.
         model = AutoModel.from_pretrained(
             MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True,
             use_safetensors=True, torch_dtype=hardware.dtype,
@@ -88,12 +93,7 @@ class ModelService:
             return {"text": result, "inference_seconds": round(time.perf_counter() - started, 3)}
         except Exception as exc:
             log.exception("Model loading or inference failed")
-            hint = (
-                "CPU execution is experimental: upstream uses CUDA-only operations. "
-                "Use a compatible NVIDIA CUDA machine for inference."
-                if detect_device().device == "cpu" else
-                "Check available VRAM, the CUDA driver, and Hugging Face connectivity."
-            )
+            hint = "Check available VRAM, the CUDA driver, and the cached model files."
             raise ModelError(f"Unlimited-OCR could not complete the request. {hint} Details: {exc}") from exc
         finally:
             self._lock.release()

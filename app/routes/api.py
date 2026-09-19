@@ -1,4 +1,4 @@
-"""Keep image OCR synchronous; run long PDFs in one worker with partial results."""
+"""Gate OCR on CUDA readiness; retain sequential PDF jobs with partial results."""
 import math
 import copy
 import uuid
@@ -64,7 +64,18 @@ def run_pdf_job(job_id, source, folder, temporary):
 @router.get("/system-info")
 def system_info():
     hardware = detect_device()
-    return {"device": hardware.device, "device_name": hardware.device_name, "vram_gb": hardware.vram_gb, "model_status": service.status, "model_error": service.error}
+    cuda = hardware.device == "cuda"
+    enabled = cuda and service.status == "ready"
+    message = (
+        "CUDA is not available on this device - OCR is disabled" if not cuda else
+        "CUDA is available - you can OCR now" if enabled else
+        service.error or "Model is loading, please wait..."
+    )
+    return {"device": hardware.device, "device_name": hardware.device_name,
+            "vram_gb": hardware.vram_gb, "cuda_available": cuda,
+            "gpu_name": hardware.device_name if cuda else None,
+            "vram_total_gb": hardware.vram_gb, "model_status": service.status,
+            "model_error": service.error, "ocr_enabled": enabled, "message": message}
 
 
 @router.get("/upload-config")
@@ -144,8 +155,9 @@ def process_pdf(source, folder, progress=None):
 
 
 def process_upload(upload):
-    if service.status != "ready":
-        raise HTTPException(503, service.error or "Model is loading, please wait...")
+    info = system_info()
+    if not info["ocr_enabled"]:
+        raise HTTPException(503, info["message"])
     if not document_lock.acquire(blocking=False):
         raise HTTPException(409, "Another document is being processed. Try again after it finishes.")
     handed_off = False
