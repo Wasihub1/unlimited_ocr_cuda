@@ -5,12 +5,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Unlimited OCR · Local workspace</title>
-  <link rel="stylesheet" href="/static/styles.css?v=background-jobs-1">
-  <script src="/static/app.js?v=background-jobs-1" defer></script>
+  <link rel="stylesheet" href="/static/styles.css?v=cuda-status-1">
+  <script src="/static/app.js?v=cuda-status-1" defer></script>
 </head>
 <body>
   <header><a href="/" class="brand">Unlimited<span>OCR</span></a><span id="device" class="badge" role="status">Checking device…</span></header>
   <main>
+    <p id="cuda-status" class="status-banner loading" role="status" aria-live="polite">Checking CUDA availability...</p>
     <p class="eyebrow">LOCAL DOCUMENT WORKSPACE</p>
     <h1>Your document.<br>A little more readable.</h1>
     <p class="intro">Extract text with Baidu’s Unlimited-OCR. Start with a document, a receipt, or a page of notes.</p>
@@ -18,7 +19,7 @@
       <section class="panel" aria-labelledby="input-title">
         <div class="panel-heading"><h2 id="input-title">01 <span>Source document</span></h2><span>PDF · PNG · JPG · WEBP</span></div>
         <label id="dropzone" class="dropzone" for="file">
-          <input id="file" type="file" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp">
+          <input id="file" type="file" disabled aria-describedby="model-status" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp">
           <span class="upload-icon" aria-hidden="true">↑</span>
           <strong>Drop a PDF or image here</strong><span id="upload-hint">or click to browse</span>
           <span id="pdf-note" hidden>PDF selected - all pages will be processed in order</span>

@@ -7,6 +7,8 @@ let maxUploadBytes = 0;
 let modelReady = false;
 function updateRunButton() {
   $('run').disabled = running || !selectedFile || !modelReady;
+  $('file').disabled = running || !modelReady;
+  $('dropzone').classList.toggle('disabled', running || !modelReady);
 }
 
 function showError(message) {
@@ -15,7 +17,7 @@ function showError(message) {
 }
 
 function selectFile(file) {
-  if (running) return;
+  if (running || !modelReady) return;
   selectedFile = null;
   $('run').disabled = true;
   if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -54,7 +56,7 @@ $('file').addEventListener('change', (event) => selectFile(event.target.files[0]
 for (const eventName of ['dragenter', 'dragover', 'dragleave', 'drop']) {
   $('dropzone').addEventListener(eventName, (event) => {
     event.preventDefault();
-    $('dropzone').classList.toggle('dragging', !running && ['dragenter', 'dragover'].includes(eventName));
+    $('dropzone').classList.toggle('dragging', !running && modelReady && ['dragenter', 'dragover'].includes(eventName));
     if (eventName === 'drop') selectFile(event.dataTransfer.files[0]);
   });
 }
@@ -88,7 +90,7 @@ $('run').addEventListener('click', async () => {
   } finally {
     running = false;
     updateRunButton();
-    $('file').disabled = false;
+    $('file').disabled = !modelReady;
     $('spinner').hidden = true;
     $('run-label').textContent = 'Run OCR';
   }
@@ -99,14 +101,38 @@ async function loadDevice() {
     const response = await fetch('/api/system-info');
     if (!response.ok) throw new Error('Device detection failed');
     const data = await response.json();
-    modelReady = data.model_status === 'ready';
-    $('model-status').textContent = modelReady ? 'Model ready' : data.model_status === 'error' ? `Model loading failed: ${data.model_error || 'See server logs and rerun setup.'}` : 'Model is loading, please wait...';
+    modelReady = data.ocr_enabled === true;
+    let message;
+    let state;
+    const gpu = `${data.gpu_name || data.device_name} (${data.vram_total_gb ?? data.vram_gb} GB)`;
+    if (data.model_status === 'error') {
+      state = 'error';
+      message = `Model loading failed: ${data.model_error || 'See server logs and rerun setup.'}`;
+    } else if (!data.cuda_available) {
+      state = 'unavailable';
+      message = 'CUDA is not available on this device. OCR is disabled.';
+    } else if (modelReady) {
+      state = 'ready';
+      message = `CUDA is available - you can OCR now. ${gpu}`;
+    } else {
+      state = 'loading';
+      message = `CUDA detected: ${gpu}. Loading model...`;
+    }
+    $('cuda-status').className = `status-banner ${state}`;
+    $('cuda-status').textContent = message;
+    $('model-status').textContent = message;
+    $('file').title = modelReady ? 'Choose a document' : message;
+    $('dropzone').title = $('file').title;
     updateRunButton();
-    $('device').textContent = data.device === 'cuda' ? `${data.device_name} · ${data.vram_gb} GB VRAM` : 'CPU · Experimental inference';
+    $('device').textContent = data.cuda_available ? gpu : 'CPU - OCR disabled';
   } catch {
     modelReady = false;
     updateRunButton();
-    $('model-status').textContent = 'Server unavailable. Waiting to reconnect...';
+    $('cuda-status').className = 'status-banner error';
+    $('cuda-status').textContent = 'Cannot reach server';
+    $('model-status').textContent = 'Cannot reach server';
+    $('file').title = 'Cannot reach server';
+    $('dropzone').title = 'Cannot reach server';
     $('device').textContent = 'Device unavailable';
   } finally {
     setTimeout(loadDevice, 3000);
@@ -176,7 +202,7 @@ async function resumeJob() {
     showError(error.message);
   } finally {
     running = false;
-    $('file').disabled = false;
+    $('file').disabled = !modelReady;
     updateRunButton();
   }
 }

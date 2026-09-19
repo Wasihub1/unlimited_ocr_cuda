@@ -27,7 +27,9 @@ async function loadUI(status = "ready", jobStatus = "done") {
     sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
     document: { getElementById: (id) => elements.get(id) },
     URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
-    fetch: async (url) => ({ ok: true, json: async () => {
+    fetch: async (url) => {
+      if (status === 'unreachable') throw new Error('offline');
+      return { ok: true, json: async () => {
       if (url === '/api/ocr') return { job_id: 'job-test' };
       if (url.startsWith('/api/ocr/status/')) {
         polls++;
@@ -35,8 +37,8 @@ async function loadUI(status = "ready", jobStatus = "done") {
           total_pages: 2, results: [{ page: 1, text: 'Partial page' }],
           text: 'Complete text', inference_seconds: 0.5, page_count: 2, error: 'Page 2 failed' };
       }
-      return { device: 'cpu', max_upload_bytes: 0, model_status: status };
-    } }),
+      return { device: status === 'unavailable_no_cuda' ? 'cpu' : 'cuda', cuda_available: status !== 'unavailable_no_cuda', gpu_name: 'Fake GPU', vram_total_gb: 16, ocr_enabled: status === 'ready', max_upload_bytes: 0, model_status: status };
+    } }; },
   });
   vm.runInContext(fs.readFileSync(path.join(root, 'frontend/app.js'), 'utf8'), context);
   await new Promise(resolve => setImmediate(resolve));
@@ -70,7 +72,7 @@ for (const status of ['loading', 'error']) {
     const ui = await loadUI(status);
     ui.get('file').events.change({ target: { files: [{ name: 'test.pdf', type: 'application/pdf', size: 10 }] } });
     assert.equal(ui.get('run').disabled, true);
-    assert.match(ui.get('model-status').textContent, /Model/);
+    assert.match(ui.get('model-status').textContent, /[Mm]odel/);
   });
 }
 
@@ -90,3 +92,27 @@ for (const terminal of ['done', 'error']) {
     }
   });
 }
+
+for (const status of ['unavailable_no_cuda', 'loading', 'error']) {
+  test(`upload and drop stay disabled for ${status}`, async () => {
+    const ui = await loadUI(status);
+    assert.equal(ui.get('file').disabled, true);
+    ui.get('dropzone').events.drop({ preventDefault() {}, dataTransfer: { files: [{ name: 'x.pdf', type: 'application/pdf', size: 10 }] } });
+    assert.equal(ui.get('run').disabled, true);
+    assert.equal(ui.get('filename').textContent, '');
+    assert.match(ui.get('cuda-status').textContent, status === 'unavailable_no_cuda' ? /CUDA is not available/ : /[Mm]odel/);
+  });
+}
+
+test('unreachable server disables controls and shows connection error', async () => {
+  const ui = await loadUI('unreachable');
+  assert.equal(ui.get('cuda-status').textContent, 'Cannot reach server');
+  assert.equal(ui.get('file').disabled, true);
+  assert.equal(ui.get('run').disabled, true);
+});
+
+test('ready banner contains GPU details and enables browsing', async () => {
+  const ui = await loadUI();
+  assert.match(ui.get('cuda-status').textContent, /CUDA is available.*Fake GPU.*16 GB/);
+  assert.equal(ui.get('file').disabled, false);
+});
